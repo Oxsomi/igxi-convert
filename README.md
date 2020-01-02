@@ -1,2 +1,4 @@
 # igxi-tool
-A tool for converting png/jpg/bmp/raw data to igxi format
+A tool for converting hdr/jpg/png/bmp/gif/pic/pnm/tga/psd/raw data to igxi format.
+
+![](https://github.com/Nielsbishere/igxi-tool/workflows/C%2FC++%20CI/badge.svg)

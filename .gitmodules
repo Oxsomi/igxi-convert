@@ -1,0 +1,3 @@
+[submodule "igxi"]
+	path = igxi
+	url = https://github.com/Oxsomi/igxi
