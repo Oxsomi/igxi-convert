@@ -1,3 +1,6 @@
 [submodule "igxi"]
 	path = igxi
 	url = https://github.com/Oxsomi/igxi
+[submodule "stb"]
+	path = third_party/stb
+	url = https://github.com/Nielsbishere/stb
