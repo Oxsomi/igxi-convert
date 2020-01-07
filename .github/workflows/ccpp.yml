@@ -8,6 +8,8 @@ jobs:
     runs-on: windows-latest
     steps:
     - uses: actions/checkout@v1
+      with:
+        submodules: recursive
     - name: cmake build
       run: cmake . -G "Visual Studio 16 2019"
     - name: build
