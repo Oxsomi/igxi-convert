@@ -3,12 +3,17 @@
 
 namespace igxi {
 
-	//A helper for converting to and from IGXI format
+	//A helper for converting to IGXI format
+	//Conversion from IGXI isn't always lossless,
+	//	since some output formats can't represent the input format
 	//Supports the following formats:
 	//	hdr (defaulted as 16-bit float)
 	//	jpg/png/bmp/gif/pic/pnm/tga (defaulted as 8-bit unorm)
 	//	psd (defaulted as 8-bit or 16-bit unorm based on the image data)
-	//	bin (not defaulted; will error if you don't provide a good format)
+	//	TODO: bin (lossless)
+	//		requires resolution and format to be set
+	//	TODO: json (lossless)
+	//		requires resolution and format to be set
 	//
 	struct Helper {
 
@@ -209,8 +214,8 @@ namespace igxi {
 		//
 		//MISSING_FACE is if a face of the cube is missing
 		//MISSING_MIP is if GENERATE_MIP is off and one of the mips isn't provided
-		//MISSING_LAYER is if one of the layers is missing
-		//MISSING_SAMPLE is if one of the layers (samples) of the MS texture is missing
+		//MISSING_PATHS is if the paths are missing
+		//MISSING_RESOURCE_INDEX is if one of the subresources is missing from input
 		//
 		//CONFLICTING_IMAGE_SIZE is if one of the input images is a different size than another
 		//
@@ -219,6 +224,10 @@ namespace igxi {
 		//		or when psd 16-bit is combined with 8-bit or hdr
 		//		or if the channel count isn't the same
 		//	Solution: Set the output format manually or convert to the same format
+		//
+		//CONFLICTING_RESOURCE_INDEX is when a subresource is referenced multiple times
+		//
+		//TOO_MANY_MIPS is generated if GENERATE_MIPS is on but more mips than the base mip are passed
 		//
 		enum ErrorMessage : u8 {
 
@@ -234,14 +243,19 @@ namespace igxi {
 			INVALID_FILE_BOUNDS,
 			INVALID_IMAGE_SIZE,
 			INVALID_RESOURCE_INDEX,
+			INVALID_FILE_NAME_FACE,
+			INVALID_FILE_NAME_SLICE,
+			INVALID_FILE_NAME_MIP,
 
 			MISSING_FACE = 0x21,
-			MISSING_MIP,
-			MISSING_LAYER,
-			MISSING_SAMPLE,
+			MISSING_PATHS,
+			MISSING_RESOURCE_INDEX,
 
 			CONFLICTING_IMAGE_SIZE = 0x41,
-			CONFLICTING_IMAGE_FORMAT
+			CONFLICTING_IMAGE_FORMAT,
+			CONFLICTING_RESOURCE_INDEX,
+
+			TOO_MANY_MIPS = 0x61
 
 		};
 
@@ -254,6 +268,12 @@ namespace igxi {
 
 		//Convert a single file into an IGXI file
 		static ErrorMessage convert(IGXI &out, const String &path, Flags flags = DEFAULT);
+
+		//Convert a couple files (with  into an IGXI file
+		static ErrorMessage convert(IGXI &out, const List<String> &paths, Flags flags = DEFAULT);
+
+		//Convert a couple files (with description) into an IGXI file
+		static ErrorMessage convert(IGXI &out, const List<FileDesc> &descs, Flags flags = DEFAULT);
 
 		//Convert to an IGXI description
 		//static ErrorMessage convert(const IGXI &out, const Description &desc, Flags flags = DEFAULT);

@@ -185,11 +185,11 @@ namespace igxi {
 
 	//Find all files that correspond with the given path and parse their file description
 
-	inline Helper::ErrorMessage findFiles(
-		const String &path, Helper::Flags flags, List<Helper::FileDesc> &files, u16 &length, u16 &layers, u16 &mips
-	) {
+	/*inline Helper::ErrorMessage findFiles(
+		const String &path, Helper::Flags flags, List<String> &files
+	) {*/
 
-		//TODO: Load
+		//TODO: Find appropriate files
 		//Types:
 		//
 		//	If IS_1D is set, it will read the file as a 1D image (even if 2D)
@@ -226,7 +226,7 @@ namespace igxi {
 		//MISSING_SAMPLE is if one of the layers (samples) of the MS texture is missing
 
 		//TODO: return files in order from z, layer, mip
-	}
+	//}
 
 	//Copy memory from temporary image into our target
 
@@ -258,7 +258,10 @@ namespace igxi {
 
 	//Convert to a valid IGXI file
 
-	Helper::ErrorMessage Helper::convert(IGXI &out, const String &path, Flags flags) {
+	Helper::ErrorMessage Helper::convert(IGXI &out, const List<FileDesc> &files, Flags flags) {
+
+		if(files.empty())
+			return MISSING_PATHS;
 
 		out = {};
 
@@ -286,15 +289,6 @@ namespace igxi {
 			else				type = TextureType(u8(type) | u8(TextureType::PROPERTY_IS_ARRAY));
 		}
 
-		//Find appropriate files
-
-		u16 length, layers, mips;
-
-		List<FileDesc> files;
-		
-		if (ErrorMessage msg = findFiles(path, flags, files, length, layers, mips))
-			return msg;
-
 		//Get usage
 
 		GPUMemoryUsage usage{};
@@ -310,6 +304,48 @@ namespace igxi {
 
 		if (flags & MEMORY_GPU_WRITE)
 			usage = GPUMemoryUsage(u8(usage) | u8(GPUMemoryUsage::GPU_WRITE));
+
+		//Get other dimensions than x & y
+
+		u16 length{}, layers{}, mips{};
+
+		for (const FileDesc &desc : files) {
+
+			if (desc.z == 0xFFFF || desc.layer == 0xFFFF || desc.mip == 0xFFF)
+				return INVALID_RESOURCE_INDEX;
+
+			length = std::max(length, u16(desc.z + 1));
+			layers = std::max(layers, u16(desc.layer + 1));
+			mips = std::max(mips, u16(desc.mip + 1));
+		}
+
+		//Check for missing resource indices
+
+		if (flags & GENERATE_MIPS && mips != 1)
+			return TOO_MANY_MIPS;
+
+		u16 checkMipCount = flags & GENERATE_MIPS ? 1 : mips;
+
+		for (u64 i = 0; i < u64(length) * layers * checkMipCount; ++i) {
+
+			u16 z = u16(i % length);
+			u16 l = u16(i / length % layers);
+			u16 m = u16(i / length / layers);
+
+			bool contains{};
+
+			for(const FileDesc &desc : files)
+				if (desc.mip == m && desc.layer == l && desc.z == z) {
+					contains = true;
+					break;
+				}
+
+			if (!contains)
+				return MISSING_RESOURCE_INDEX;
+		}
+
+		if (flags & IS_CUBE && layers % 6)
+			return MISSING_FACE;
 
 		//Output data
 
@@ -327,7 +363,7 @@ namespace igxi {
 
 		List<Array<u16, 5>> sizes;
 
-		for (FileDesc &file : files) {
+		for (const FileDesc &file : files) {
 
 			List<Buffer> fileData;
 
@@ -350,29 +386,30 @@ namespace igxi {
 				u16 mip{};
 
 				u16 stride = u16(FormatHelper::getSizeBytes(format));
+				u16 z = length;
 
 				for (Buffer &b : out.data[0]) {
 
-					b.resize(layers * length * y * x * stride);
+					b.resize(layers * z * y * x * stride);
 
-					sizes[mip] = { stride, x, y, length, layers };
+					sizes[mip] = { stride, x, y, z, layers };
 
-					length = u16(std::ceil(f64(length) / 2));
+					z = u16(std::ceil(f64(z) / 2));
 					y = u16(std::ceil(f64(y) / 2));
 					x = u16(std::ceil(f64(x) / 2));
 					++mip;
 				}
 
 			} else if (x != out.header.width || y != out.header.height)
-				return Helper::CONFLICTING_IMAGE_SIZE;
+				return CONFLICTING_IMAGE_SIZE;
 
 			else if(format != out.format[0])
-				return Helper::CONFLICTING_IMAGE_FORMAT;
+				return CONFLICTING_IMAGE_FORMAT;
 
 			u16 mip{};
 
 			for (const Buffer &buf : fileData)
-				if (Helper::ErrorMessage msg = insertInto(out, buf, 0, file.z, file.layer, file.mip + mip, sizes[mip]))
+				if (ErrorMessage msg = insertInto(out, buf, 0, file.z, file.layer, file.mip + mip, sizes[mip]))
 					return msg;
 				else 
 					++mip;
@@ -380,12 +417,89 @@ namespace igxi {
 
 		//Compress
 
-		if (flags & Helper::DO_COMPRESSION) {
+		if (flags & DO_COMPRESSION) {
 			//TODO: Set format to compressed formats
 			//TODO: Convert everytime a FULL layer is added to minimize memory usage
 		}
 
 		return SUCCESS;
+	}
+
+	//Parse descs by paths
+
+	Helper::ErrorMessage Helper::convert(IGXI &out, const List<String> &paths, Flags flags) {
+
+		usz j = paths.size();
+		List<FileDesc> files(j);
+
+		usz sliceMultiplier = flags & IS_CUBE ? 6 : 1;
+
+		enum Index : u8 { SIDE, SAMPLE, SLICE, SIZE };
+
+		using Indices = Array<u16, SIZE>;
+
+		List<Indices> indices(j);
+		Indices max{};
+
+		for (usz i = 0; i < j; ++i) {
+
+			FileDesc &f = files[i];
+			f.path = paths[i];
+
+			auto &index = indices[i];
+
+			if (flags & IS_CUBE)
+				if (ErrorMessage msg = findSide(f.path, flags, index[SIDE]))
+					return msg;
+
+			if (flags & IS_MS)
+				if (ErrorMessage msg = findSample(f.path, flags, index[SAMPLE]))
+					return msg;
+
+			if (flags & IS_3D)
+				if (ErrorMessage msg = findZ(f.path, flags, f.z))
+					return msg;
+
+			if (flags & IS_ARRAY)
+				if (ErrorMessage msg = findSlice(f.path, flags, index[SLICE]))
+					return msg;
+
+			if (!(flags & GENERATE_MIPS))
+				if (ErrorMessage msg = findMip(f.path, flags, f.mip))
+					return msg;
+
+			for (u8 i = 0; i < SIZE; ++i)
+				if (index[i] == 0xFFFF)
+					return INVALID_RESOURCE_INDEX;
+				else
+					max[i] = std::max(u16(index[i] + 1), max[i]);
+		}
+
+		for (usz i = 0; i < j; ++i) {
+
+			auto &idx = indices[i];
+
+			auto layer = (u64(idx[SLICE]) * max[SAMPLE] + idx[SAMPLE]) * max[SIDE] + idx[SIDE];
+
+			if(layer > 0xFFFF)
+				return INVALID_RESOURCE_INDEX;
+
+			files[i].layer = u16(layer);
+		}
+
+		return convert(out, files, flags);
+	}
+
+	//Find paths similar to the input path
+
+	Helper::ErrorMessage Helper::convert(IGXI &out, const String &path, Flags flags) {
+
+		List<String> files;
+		
+		if (ErrorMessage msg = findFiles(path, flags, files))
+			return msg;
+
+		return convert(out, files, flags);
 	}
 
 }
