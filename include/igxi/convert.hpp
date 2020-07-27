@@ -1,21 +1,94 @@
 #pragma once
 #include "igxi/igxi.hpp"
+#include "types/vec.hpp"
 
 namespace igxi {
+
+	//Supports the following formats:
+	//	hdr (defaulted as 16-bit float)
+	//	png/jpg/bmp/gif/pic/pnm/tga (defaulted as 8-bit unorm)
+	//
+	enum class ExternalFormat : u32 {
+
+		//Properties
+
+		PROPERTY_SUPPORTS_FLOAT			= 0x00001,
+		PROPERTY_SUPPORTS_UNORM			= 0x00002,
+		PROPERTY_SUPPORTS_SNORM			= 0x00004,
+		PROPERTY_SUPPORTS_UINT			= 0x00008,
+		PROPERTY_SUPPORTS_SINT			= 0x00010,
+
+		PROPERTY_SUPPORTS_8B			= 0x00020,
+		PROPERTY_SUPPORTS_16B			= 0x00040,
+		PROPERTY_SUPPORTS_32B			= 0x00080,
+		PROPERTY_SUPPORTS_64B			= 0x00100,
+
+		PROPERTY_SUPPORTS_1C			= 0x00200,
+		PROPERTY_SUPPORTS_2C			= 0x00400,
+		PROPERTY_SUPPORTS_3C			= 0x00800,
+		PROPERTY_SUPPORTS_4C			= 0x01000,
+
+		PROPERTY_CAN_BE_LOSSLESS		= 0x02000,
+		PROPERTY_CAN_BE_LOSSY			= 0x04000,
+
+		PROPERTY_SUPPORTS_BC			= 0x08000,
+		PROPERTY_SUPPORTS_ASTC			= 0x10000,
+
+		//File formats
+
+		PNG = 
+			PROPERTY_CAN_BE_LOSSLESS |
+			PROPERTY_SUPPORTS_UNORM | 
+			PROPERTY_SUPPORTS_8B | PROPERTY_SUPPORTS_16B | 
+			PROPERTY_SUPPORTS_1C | PROPERTY_SUPPORTS_2C | PROPERTY_SUPPORTS_3C | PROPERTY_SUPPORTS_4C, 
+
+		/* TODO:
+
+		HDR	= 
+			PROPERTY_SUPPORTS_FLOAT | 
+			PROPERTY_SUPPORTS_16B | PROPERTY_SUPPORTS_32B | 
+			PROPERTY_SUPPORTS_3C, 
+
+		JPG	=
+			PROPERTY_SUPPORTS_UNORM |
+			PROPERTY_SUPPORTS_8B |
+			PROPERTY_SUPPORTS_3C,
+
+		TGA	= 
+			PROPERTY_SUPPORTS_UNORM |
+			PROPERTY_SUPPORTS_8B |
+			PROPERTY_SUPPORTS_1C | PROPERTY_SUPPORTS_2C | PROPERTY_SUPPORTS_3C | PROPERTY_SUPPORTS_4C,
+
+		BMP, 
+		GIF, 
+		PIC, 
+		PNM, 
+		//TIFF,		TODO
+		//DDS,		TODO (almost any format)
+		//OPENEXR,	TODO (almost any format)
+		PSD
+		*/
+	};
+
+	enumFlagOverloads(ExternalFormat);
 
 	//A helper for converting to IGXI format
 	//Conversion from IGXI isn't always lossless,
 	//	since some output formats can't represent the input format
-	//Supports the following formats:
-	//	hdr (defaulted as 16-bit float)
-	//	jpg/png/bmp/gif/pic/pnm/tga (defaulted as 8-bit unorm)
-	//	psd (defaulted as 8-bit or 16-bit unorm based on the image data)
-	//	TODO: bin (lossless)
-	//		requires resolution and format to be set
-	//	TODO: json (lossless)
-	//		requires resolution and format to be set
 	//
 	struct Helper {
+
+		//A list of all supported formats and their extensions
+
+		static constexpr ExternalFormat allFormatsByPriority[] = {
+			ExternalFormat::PNG
+		};
+
+		//A location of the image
+		struct ImageIdentifier {
+			u16 z, layer;
+			u8 mip;
+		};
 
 		//Flags for a full IGXI file
 		//
@@ -161,15 +234,16 @@ namespace igxi {
 
 			MEMORY_REQUIRE = 0,
 			MEMORY_PREFER = 1 << 23,
-			MEMORY_CPU_WRITE = 1 << 24,
-			MEMORY_GPU_WRITE = 1 << 25,
+			MEMORY_CPU_READ = 1 << 24,
+			MEMORY_CPU_WRITE = 1 << 25,
+			MEMORY_GPU_WRITE = 1 << 26,
 
 			//Mip generation; TODO: needs a count
 
 			MIP_LINEAR = 0,
-			MIP_NEAREST = 1 << 26,
-			MIP_MIN = 1 << 27,
-			MIP_MAX = 1 << 28,
+			MIP_NEAREST = 1 << 27,
+			MIP_MIN = 1 << 28,
+			MIP_MAX = 1 << 29,
 
 			//Default values
 
@@ -211,6 +285,7 @@ namespace igxi {
 		//INVALID_FILE_BOUNDS is generated if the file is empty
 		//INVALID_IMAGE_SIZE is generated if the parsed size is too small or too big
 		//INVALID_RESOURCE_INDEX is if the mip, layer or z is out of bounds
+		//INVALID_OPERATION is generated if an operation is unimplemented
 		//
 		//MISSING_FACE is if a face of the cube is missing
 		//MISSING_MIP is if GENERATE_MIP is off and one of the mips isn't provided
@@ -246,6 +321,7 @@ namespace igxi {
 			INVALID_FILE_NAME_FACE,
 			INVALID_FILE_NAME_SLICE,
 			INVALID_FILE_NAME_MIP,
+			INVALID_OPERATION,
 
 			MISSING_FACE = 0x21,
 			MISSING_PATHS,
@@ -263,7 +339,7 @@ namespace igxi {
 		//Including where in the resource it is located
 		struct FileDesc {
 			String path;
-			u16 z, layer, mip;
+			ImageIdentifier iid;
 		};
 
 		//Convert a single file into an IGXI file
@@ -277,6 +353,26 @@ namespace igxi {
 
 		//Convert to an IGXI description
 		//static ErrorMessage convert(const IGXI &out, const Description &desc, Flags flags = DEFAULT);
+
+		//Convert an IGXI's gpu format index to an external format format
+		//Returns an empty buffer if it cannot be converted
+		//"Quality" can be set to 0->1 depending on how much detail should be kept
+		static Buffer toExternalFormat(const IGXI &in, ExternalFormat exFormat, ignis::GPUFormat format, const Vec3u16 &dim, u16 z, u16 layerId, u8 mipId, f32 quality = 1);
+
+		//Whether or not the mentioned format can be represented by PNG format
+		//If quality == 1, the format has to be capable of representing lossless images
+		static bool supportsExternalFormat(ExternalFormat exFormat, ignis::GPUFormat format, f32 quality = 1);
+
+		//Output IGXI as png/jpg/hdr/dds/etc. depending on the GPUFormat
+		//Returns only the formats that are supported by the external file formats, so check result.size() with in.headers.formats
+		static HashMap<ignis::GPUFormat, List<Pair<FileDesc, Buffer>>> toMemoryExternalFormat(const IGXI &in, f32 quality = 1);
+
+		//Output IGXI as png/jpg/hdr/dds/etc. depending on the GPUFormat
+		//Returns the unsupported formats
+		//On success (and successful write to "path"), the resulting List will be empty
+		//As this can return any type of image format, the path should be without an extension
+		//It also outputs layers as follows: path_z_layer_mip_formatName if multiple layers, mips or formats are present
+		static List<ignis::GPUFormat> toDiskExternalFormat(const IGXI &in, const String &path, f32 quality = 1);
 
 	};
 
