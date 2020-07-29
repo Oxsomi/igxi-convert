@@ -1,6 +1,7 @@
 #pragma once
 #include "igxi/igxi.hpp"
 #include "types/vec.hpp"
+#include "graphics/memory/texture.hpp"
 
 namespace igxi {
 
@@ -248,11 +249,14 @@ namespace igxi {
 			//Default values
 
 			NONE = 0,
+
 			DEFAULT =
 				GENERATE_MIPS | DO_COMPRESSION | IS_2D |
 				INPUT_BIT_COUNT	| INPUT_CHANNEL_COUNT | INPUT_PRIMITIVE | MIP_LINEAR,
 
-			DEFAULT_NO_COMPRESSION = DEFAULT & ~DO_COMPRESSION
+			DEFAULT_NO_MIPS = DEFAULT & ~GENERATE_MIPS,
+			DEFAULT_NO_COMPRESSION = DEFAULT & ~DO_COMPRESSION,
+			DEFAULT_NO_MIPS_NO_COMPRESSION = DEFAULT_NO_COMPRESSION & ~GENERATE_MIPS
 
 		};
 
@@ -322,6 +326,7 @@ namespace igxi {
 			INVALID_FILE_NAME_SLICE,
 			INVALID_FILE_NAME_MIP,
 			INVALID_OPERATION,
+			INCOMPATIBLE_FORMATS,
 
 			MISSING_FACE = 0x21,
 			MISSING_PATHS,
@@ -342,10 +347,10 @@ namespace igxi {
 			ImageIdentifier iid;
 		};
 
-		//Convert a single file into an IGXI file
+		//Look up names starting with path and combine them into one IGXI
 		static ErrorMessage convert(IGXI &out, const String &path, Flags flags = DEFAULT);
 
-		//Convert a couple files (with  into an IGXI file
+		//Convert a couple files by name into an IGXI file
 		static ErrorMessage convert(IGXI &out, const List<String> &paths, Flags flags = DEFAULT);
 
 		//Convert a couple files (with description) into an IGXI file
@@ -357,22 +362,39 @@ namespace igxi {
 		//Convert an IGXI's gpu format index to an external format format
 		//Returns an empty buffer if it cannot be converted
 		//"Quality" can be set to 0->1 depending on how much detail should be kept
-		static Buffer toExternalFormat(const IGXI &in, ExternalFormat exFormat, ignis::GPUFormat format, const Vec3u16 &dim, u16 z, u16 layerId, u8 mipId, f32 quality = 1);
+		static Buffer toExternal(const IGXI &in, ExternalFormat exFormat, ignis::GPUFormat format, const Vec3u16 &dim, u16 z, u16 layerId, u8 mipId, f32 quality = 1);
 
 		//Whether or not the mentioned format can be represented by PNG format
 		//If quality == 1, the format has to be capable of representing lossless images
-		static bool supportsExternalFormat(ExternalFormat exFormat, ignis::GPUFormat format, f32 quality = 1);
+		static bool supportsExternal(ExternalFormat exFormat, ignis::GPUFormat format, f32 quality = 1);
 
 		//Output IGXI as png/jpg/hdr/dds/etc. depending on the GPUFormat
 		//Returns only the formats that are supported by the external file formats, so check result.size() with in.headers.formats
-		static HashMap<ignis::GPUFormat, List<Pair<FileDesc, Buffer>>> toMemoryExternalFormat(const IGXI &in, f32 quality = 1);
+		static HashMap<ignis::GPUFormat, List<Pair<FileDesc, Buffer>>> toMemoryExternal(const IGXI &in, f32 quality = 1);
 
 		//Output IGXI as png/jpg/hdr/dds/etc. depending on the GPUFormat
 		//Returns the unsupported formats
 		//On success (and successful write to "path"), the resulting List will be empty
 		//As this can return any type of image format, the path should be without an extension
 		//It also outputs layers as follows: path_z_layer_mip_formatName if multiple layers, mips or formats are present
-		static List<ignis::GPUFormat> toDiskExternalFormat(const IGXI &in, const String &path, f32 quality = 1);
+		static List<ignis::GPUFormat> toDiskExternal(const IGXI &in, const String &path, f32 quality = 1);
+
+		//Load functions; returns IGXI with format.empty() if it failed
+
+		//Convert to a texture info struct
+		//Format is the format of the file you want to load. If it doesn't exist, it throws
+		//If GPUFormat is NONE, the first supported format will be returned
+		static ignis::Texture::Info convert(const IGXI &in, const ignis::Graphics &g, ignis::GPUFormat format = ignis::GPUFormat::NONE);
+
+		//Load a Texture::Info from external format memory (1 image)
+		//Format is the format of the file you want to load. If it doesn't exist, it throws
+		//If GPUFormat is NONE, the first supported format will be returned
+		static ignis::Texture::Info loadMemoryExternal(const Buffer &data, const ignis::Graphics &g, Flags flags = Flags::DEFAULT_NO_MIPS_NO_COMPRESSION);
+
+		//Load a Texture::Info from external format memory (1 image)
+		//Format is the format of the file you want to load. If it doesn't exist, it throws
+		//If GPUFormat is NONE, the first supported format will be returned
+		static ignis::Texture::Info loadDiskExternal(const String &path, const ignis::Graphics &g, Flags flags = Flags::DEFAULT_NO_MIPS_NO_COMPRESSION);
 
 	};
 

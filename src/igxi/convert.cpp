@@ -16,31 +16,80 @@ using namespace ignis;
 
 namespace igxi {
 
+	//Raw channel access
+
+	inline u64 readValue(usz stride, const u8 *data) {
+		switch (stride) {
+			case 1:		return *data;
+			case 2:		return *(const u16*)data;
+			case 4:		return *(const u32*)data;
+			case 8:		return *(const u64*)data;
+			default:	return 0;
+		}
+	}
+
+	inline void writeValue(usz stride, u8 *data, u64 val) {
+		switch (stride) {
+			case 1:		*data = u8(val);			break;
+			case 2:		*(u16*)data = u16(val);		break;
+			case 4:		*(u32*)data = u32(val);		break;
+			case 8:		*(u64*)data = u64(val);		break;
+			default:	0;
+		}
+	}
+
+	//Spaghetti monster of conversion between types
+
+	template<typename T>
+	inline u64 toU64(const T &t) {
+		u64 v{};
+		*(T*)&v = t;
+		return v;
+	}
+
+	inline bool canConvert(GPUFormat target, GPUFormat input) {
+		return 
+			FormatHelper::getType(target) == FormatHelper::getType(input) && 
+			FormatHelper::getType(target) == GPUFormatType::FLOAT;
+	}
+
+	inline u64 convert(GPUFormat target, GPUFormat input, const u64 &val) {
+
+		switch (FormatHelper::getStrideBytes(target)) {
+
+			case 2:	
+
+				if(FormatHelper::getStrideBytes(input) == 4)
+					return toU64(f16(*(const f32*)&val));
+
+				return toU64(f16(*(const f64*)&val));
+
+			case 4:
+
+				if(FormatHelper::getStrideBytes(input) == 2)
+					return toU64(f32(*(const f16*)&val));
+
+				return toU64(f32(*(const f64*)&val));
+
+			case 8:
+
+				if(FormatHelper::getStrideBytes(input) == 2)
+					return toU64(f64(*(const f16*)&val));
+
+				return toU64(f64(*(const f32*)&val));
+
+			default: return 0;
+		}
+
+	}
+
 	//Load a given file and mips
 
 	inline Helper::ErrorMessage load(
-		List<Buffer> &/*out*/, u16 baseMip, u16 /*mips*/, const String &path,
-		Helper::Flags flags, u16 &/*width*/, u16 &/*height*/, GPUFormat &format,
-		const List<Array<u16, 5>> &sizes
+		List<Buffer> &out, const Buffer &buf, u16 baseMip, u16 mips,
+		Helper::Flags flags, u16 &width, u16 &height, GPUFormat &format,
+		List<Array<u16, 5>> &sizes
 	) {
-
-		//Get file
-
-		Buffer file;
-
-		{
-			IGXI::File loader(path, false);
-			usz start{};
-			usz length = loader.size();
-
-			file.resize(length);
-
-			if (loader.readRegion(file.data(), start, length))
-				return Helper::INVALID_FILE_PATH;
-		}
-
-		if (file.size() >= (usz(1) << (sizeof(int) * 8)))
-			return Helper::INVALID_FILE_BOUNDS;
 
 		//Read image via stbi
 		//Supports jpg/png/bmp/gif/psd/pic/pnm/hdr/tga
@@ -49,14 +98,15 @@ namespace igxi {
 		stbi__result_info ri;
 
 		stbi__context s;
-		stbi__start_mem(&s, file.data(), int(file.size()));
+		stbi__start_mem(&s, buf.data(), int(buf.size()));
 
 		u8 *data{};
-		bool inputFloat{}, input16Bit{};
 
 		int x{}, y{}, comp{}, stride = 1;
 
 		const bool is1D = flags & Helper::IS_1D;
+
+		GPUFormat currentFormat = GPUFormat::NONE;
 
 		int channelCount;
 
@@ -73,20 +123,20 @@ namespace igxi {
 
 		}
 
+		bool inputFloat{}, input16Bit{};
+
 		if (stbi__hdr_test(&s)) {
 
 			data = (u8*) stbi__hdr_load(&s, &x, &y, &comp, channelCount, &ri);
-			inputFloat = true;
 			stride = 4;
+			currentFormat = GPUFormat(u16((comp - 1) | (2 << 2) | (u8(GPUFormatType::FLOAT) << 4)));;
+			inputFloat = true;
 
 		} else {
 
-			//TODO: Change 16 to 0 and fix it so it assumes the load format
-			u8 *intermediate = (u8*) stbi__load_main(&s, &x, &y, &comp, channelCount, &ri, 16);	
-
-			intermediate;
-
+			data = (u8*) stbi__load_main(&s, &x, &y, &comp, channelCount, &ri, 16);	
 			stride += int(input16Bit = ri.bits_per_channel == 16);
+			currentFormat = GPUFormat(u16((comp - 1) | ((stride - 1) << 2) | (u8(GPUFormatType::UNORM) << 4)));;
 		}
 
 		if (!channelCount)
@@ -95,6 +145,11 @@ namespace igxi {
 		if (!data)
 			return Helper::INVALID_FILE_DATA;
 
+		if (!channelCount) {
+			stbi_image_free(data);
+			return Helper::INVALID_FILE_DATA;
+		}
+
 		//Convert to correct dimension
 
 		if (is1D) {
@@ -102,9 +157,9 @@ namespace igxi {
 			y = 1;
 		}
 
-		//TODO: Initialize sizes here!
-
-		if (x >= sizes[baseMip][1] || y >= sizes[baseMip][2] || x <= 0 || y <= 0) {
+		//Technically, images could be u16_MAX as well, but I want that reserved as an error code
+		//
+		if(x >= u16_MAX || y >= u16_MAX || x <= 0 || y <= 0) {
 			stbi_image_free(data);
 			return Helper::INVALID_IMAGE_SIZE;
 		}
@@ -116,14 +171,16 @@ namespace igxi {
 		switch (flags & Helper::PROPERTY_PRIMTIIVE) {
 
 			case 0: primitive = inputFloat ? GPUFormatType::FLOAT : GPUFormatType::UNORM; break;
-
+			
 			case Helper::IS_SINT: primitive = GPUFormatType::SINT; break;
 			case Helper::IS_UINT: primitive = GPUFormatType::UINT; break;
 			case Helper::IS_UNORM: primitive = GPUFormatType::UNORM; break;
 			case Helper::IS_SNORM: primitive = GPUFormatType::SNORM; break;
 			case Helper::IS_FLOAT: primitive = GPUFormatType::FLOAT; break;
-
-			default: return Helper::INVALID_PRIMITIVE;
+			
+			default:
+				stbi_image_free(data);
+				return Helper::INVALID_PRIMITIVE;
 
 		}
 
@@ -140,7 +197,9 @@ namespace igxi {
 			case Helper::IS_32_BIT: bytes = 4; break;
 			case Helper::IS_64_BIT: bytes = 8; break;
 
-			default: return Helper::INVALID_BITS;
+			default: 
+				stbi_image_free(data);
+				return Helper::INVALID_BITS;
 
 		}
 
@@ -148,11 +207,12 @@ namespace igxi {
 
 		format = GPUFormat::NONE;
 
+		if ((bytes == 1 || bytes == 2) && channelCount == 3)
+			channelCount = 4;
+
 		if (flags & Helper::IS_SRGB) {
 
-			if (bytes == 1 && channelCount == 3)
-				format = GPUFormat::sRGB8;
-			else if (bytes == 2 && channelCount == 4)
+			if (bytes == 1 && channelCount == 4)
 				format = GPUFormat::sRGBA8;
 
 		} else {
@@ -165,32 +225,133 @@ namespace igxi {
 
 		}
 
-		if (format == GPUFormat::NONE)
+		if (GPUFormat::idByValue(format.value) >= GPUFormat::idByValue(GPUFormat::NONE)) {
+			stbi_image_free(data);
 			return Helper::INVALID_FORMAT;
+		}
 
-		//TODO: Foreach pixel: convert to correct primitive
-		//TODO: Foreach pixel: convert to correct channel size
-		//TODO: SRGB?
-		//TODO: Copy into out[baseMip]
+		//Get strides
+
+		if (sizes.empty()) {
+
+			u16 xx = u16(x), yy = u16(y);
+
+			//TODO: Assumption not always correct
+
+			width = xx;
+			height = yy;
+
+			sizes.resize(mips);
+			out.resize(mips);
+
+			u16 j = (flags & Helper::GENERATE_MIPS) ? mips : 1;
+
+			for (u16 i = 0; i < j; ++i) {
+				sizes[baseMip + i] = { u16(FormatHelper::getSizeBytes(format)), xx, yy, 1, 1 };
+				xx = u16(std::ceil((f32(xx) / 2.f)));
+				yy = u16(std::ceil((f32(yy) / 2.f)));
+			}
+		}
+		else {
+			stbi_image_free(data);
+			return Helper::INVALID_OPERATION;
+		}
+
+		if (baseMip != 0) {
+			stbi_image_free(data);
+			return Helper::INVALID_OPERATION;
+		}
+			
+		//TODO:
+			/*{
+
+			update layers/mip
+
+			if (x != sizes[baseMip][1] || y != sizes[baseMip][2]) {
+				stbi_image_free(data);
+				return Helper::INVALID_IMAGE_SIZE;
+			}
+		}*/
+
+		if (format != currentFormat) {
+
+			if (!canConvert(format, currentFormat))
+				return Helper::INCOMPATIBLE_FORMATS;
+
+			Buffer &converted = out[baseMip] = Buffer(usz(bytes) * channelCount * x * y);
+
+			u8 *convertedPtr = (u8*)converted.data();
+
+			usz copyStride = std::min(channelCount, comp);
+			usz copyLength = copyStride * x * y;
+
+			for (usz i = 0; i < copyLength; ++i) {
+
+				usz channel = i % copyStride;
+				usz xy = i / copyStride;
+
+				u64 val = convert(
+					format, 
+					currentFormat,
+					readValue(stride, data + usz(stride) * (channel + xy * comp))
+				);
+
+				writeValue(bytes, convertedPtr + usz(bytes) * (channel + xy * channelCount), val);
+			}
+
+		}
+		else out[baseMip] = Buffer(data, data + usz(stride) * comp * x * y);
 
 		//Generate mips
 
 		if (flags & Helper::GENERATE_MIPS) {
-
-			//TODO: Only supported with a few formats
-			//TODO: Use premultiplied alpha before generating mips
-			//		Get it back somehow?
-
-			//TODO: MIP_NEAREST, MIP_LINEAR, MIP_MIN, MIP_LINEAR
-			//TODO: stbir filters
-			//TODO: Report progress so you can see how much has been converted
-
-			//stbir_resize_float(...);
-			//Copy into out[baseMip + n] where n < mips
+			stbi_image_free(data);
+			return Helper::INVALID_OPERATION;
 		}
 
+		//Use optimal format for mip generation; might be sRGB, float format, etc.
+
+		//TODO: Only supported with a few formats
+		//TODO: Use premultiplied alpha before generating mips
+		//		Get it back somehow?
+
+		//TODO: MIP_NEAREST, MIP_LINEAR, MIP_MIN, MIP_LINEAR
+		//TODO: stbir filters
+		//TODO: Report progress so you can see how much has been converted
+
+		//stbir_resize_float(...);
+		//Copy into out[baseMip + n] where n < mips
+
 		stbi_image_free(data);
-		return Helper::INVALID_OPERATION;
+		return Helper::SUCCESS;
+	}
+
+	inline Helper::ErrorMessage load(
+		List<Buffer> &out, u16 baseMip, u16 mips, const String &path,
+		Helper::Flags flags, u16 &width, u16 &height, GPUFormat &format,
+		List<Array<u16, 5>> &sizes
+	) {
+
+		//Get file
+
+		Buffer file;
+
+		{
+			IGXI::File loader(path, false);
+
+			usz start{};
+
+			if (loader.readRegion(file.data(), start, loader.size()))
+				return Helper::INVALID_FILE_PATH;
+		}
+
+		if (file.size() >= (usz(1) << (sizeof(int) * 8)))
+			return Helper::INVALID_FILE_BOUNDS;
+
+		if (Helper::ErrorMessage errorMessage = load(out, file, baseMip, mips, flags, width, height, format, sizes))
+			return errorMessage;
+
+		return Helper::ErrorMessage::SUCCESS;
 	}
 
 	//Find all files that correspond with the given path and parse their file description
@@ -252,7 +413,7 @@ namespace igxi {
 		if(buf.size() != oneImg)
 			return Helper::INVALID_IMAGE_SIZE;
 
-		std::memcpy(out.data() + (layer * size[3] + z) * oneImg, buf.data(), oneImg);
+		std::memcpy(out.data() + (usz(layer) * size[3] + z) * oneImg, buf.data(), oneImg);
 		return Helper::SUCCESS;
 	}
 
@@ -272,8 +433,6 @@ namespace igxi {
 
 		if(files.empty())
 			return MISSING_PATHS;
-
-		out = {};
 
 		//Get type
 
@@ -362,6 +521,9 @@ namespace igxi {
 
 		//Output data
 
+		IGXI old = out;
+
+		out = {};
 		out.header.flags = IGXI::Flags::CONTAINS_DATA;
 		out.header.formats = 1;
 		out.header.usage = usage;
@@ -380,11 +542,44 @@ namespace igxi {
 
 			List<Buffer> fileData;
 
-			u16 x, y;
-			GPUFormat format;
+			u16 x{}, y{};
+			GPUFormat format = GPUFormat::NONE;
 
-			if (Helper::ErrorMessage msg = load(
-				fileData, file.iid.mip, flags & GENERATE_MIPS ? mips : 1, file.path, flags, x, y, format, sizes
+			if (file.path.empty()) {
+
+				//Attempt to load one of multiple specified external formats
+				//(like HDR or PNG can both be supplied, 
+				//but if the flags doesn't support one of them it will pick the other)
+
+				if (old.data.empty())
+					return Helper::INVALID_FILE_DATA;
+
+				Helper::ErrorMessage last = Helper::SUCCESS;
+
+				for(auto &elem : old.data)
+					if (
+						(last = 
+							load(
+								fileData, elem[file.iid.layer], 
+								file.iid.mip, flags & GENERATE_MIPS ? mips :  1, 
+								flags, x, y, format, sizes
+							)
+						) == Helper::SUCCESS
+					)
+						break;
+
+				if (last != Helper::SUCCESS)
+					return last;
+
+			}
+
+			//Attemp to load from file
+
+			else if (ErrorMessage msg = load(
+				fileData, 
+				file.iid.mip, flags & GENERATE_MIPS ? mips : 1, 
+				file.path,
+				flags, x, y, format, sizes
 			))
 				return msg;
 
@@ -533,7 +728,7 @@ namespace igxi {
 
 		//TODO: Range checking
 
-		if (!Helper::supportsExternalFormat(externFormat, in.format[formatId], quality)) {
+		if (!Helper::supportsExternal(externFormat, in.format[formatId], quality)) {
 			oic::System::log()->error("Unsupported format");
 			return {};
 		}
@@ -567,7 +762,7 @@ namespace igxi {
 
 	//Wrapper
 
-	bool Helper::supportsExternalFormat(ExternalFormat exFormat, GPUFormat format, f32 quality) {
+	bool Helper::supportsExternal(ExternalFormat exFormat, GPUFormat format, f32 quality) {
 
 		//Validate inputs
 
@@ -576,7 +771,7 @@ namespace igxi {
 
 		//Checking for custom formats
 
-		if (format >= GPUFormat::sRGB8)
+		if (format > GPUFormat::sRGBA8)
 			return false;
 
 		//Checking bit depth
@@ -612,7 +807,7 @@ namespace igxi {
 		return HasFlags(exFormat, ExternalFormat::PROPERTY_SUPPORTS_UNORM);
 	}
 
-	Buffer Helper::toExternalFormat(
+	Buffer Helper::toExternal(
 		const IGXI &in, ExternalFormat exFormat, GPUFormat format, const Vec3u16 &dim, u16 z, u16 layerId, u8 mip, f32 quality
 	) {
 
@@ -626,13 +821,13 @@ namespace igxi {
 		return stbiWrite(in, dim, exFormat, u16(it - in.format.begin()), layerId, z, mip, quality);
 	}
 
-	HashMap<ignis::GPUFormat, List<Pair<Helper::FileDesc, Buffer>>> Helper::toMemoryExternalFormat(const IGXI &igxi, f32 quality) {
+	HashMap<ignis::GPUFormat, List<Pair<Helper::FileDesc, Buffer>>> Helper::toMemoryExternal(const IGXI &igxi, f32 quality) {
 
 		//TODO: Validate IGXI
 
 		//Output to buffers
 
-		HashMap<GPUFormat, List<Pair<Helper::FileDesc, Buffer>>> buffers;
+		HashMap<GPUFormat, List<Pair<FileDesc, Buffer>>> buffers;
 
 		u16 layers = igxi.header.layers, mips = igxi.header.mips, formats = igxi.header.formats;
 
@@ -645,7 +840,7 @@ namespace igxi {
 			usz i{};
 
 			for (const ExternalFormat &exFormat : allFormatsByPriority)
-				if (supportsExternalFormat(exFormat, format))
+				if (supportsExternal(exFormat, format))
 					break;
 				else ++i;
 
@@ -675,7 +870,7 @@ namespace igxi {
 								suffix, 
 								ImageIdentifier{ z, layer, mip } 
 							},
-							toExternalFormat(igxi, allFormatsByPriority[i], format, dim, z, layer, mip, quality)
+							toExternal(igxi, allFormatsByPriority[i], format, dim, z, layer, mip, quality)
 						});
 					}
 
@@ -686,9 +881,9 @@ namespace igxi {
 		return buffers;
 	}
 
-	List<GPUFormat> Helper::toDiskExternalFormat(const IGXI &igxi, const String &path, f32 quality) {
+	List<GPUFormat> Helper::toDiskExternal(const IGXI &igxi, const String &path, f32 quality) {
 
-		auto res = toMemoryExternalFormat(igxi, quality);
+		auto res = toMemoryExternal(igxi, quality);
 
 		if (res.size() != igxi.header.formats) {
 
@@ -710,6 +905,96 @@ namespace igxi {
 				oic::System::files()->writeNew(path + img.first.path, img.second);
 
 		return {};
+	}
+
+	Texture::Info Helper::convert(const IGXI &in, const Graphics &g, GPUFormat hint) {
+
+		u16 formatId = in.header.formats;
+
+		//Check if our hinted one exists and is supported
+
+		if (hint != GPUFormat::NONE) {
+			for (u16 i = 0; i < in.header.formats; ++i)
+				if (in.format[i] == hint) {
+
+					if (!g.supportsFormat(in.format[i]))
+						oic::System::log()->fatal("Unsupported requested GPUFormat by device");
+
+					formatId = i;
+					break;
+				}
+		}
+
+		else for(u16 i = 0; i < in.header.formats; ++i)
+			if (g.supportsFormat(in.format[i])) {
+				formatId = i;
+				break;
+			}
+
+		if(formatId == in.header.formats)
+			oic::System::log()->fatal("Unsupported GPUFormats in texture by device");
+
+		GPUFormat format = in.format[formatId];
+
+		Texture::Info inf = Texture::Info(
+			in.header.type, 
+			Vec3u16(in.header.width, in.header.height, in.header.length), 
+			format, in.header.usage,
+			in.header.mips, in.header.layers, 
+			1, true
+		);
+
+		if (u8(in.header.flags) & u8(IGXI::Flags::CONTAINS_DATA))
+			inf.init(in.data[formatId]);
+
+		return inf;
+	}
+
+	oicExposedEnum(ErrorMessageExposed, u8,
+
+		Success,
+
+		Invalid_type = 0x1,
+		Invalid_channels,
+		Invalid_primitive,
+		Invalid_bits,
+		Invalid_format,
+		Invalid_file_path,
+		Invalid_file_data,
+		Invalid_file_bounds,
+		Invalid_image_size,
+		Invalid_resource_index,
+		Invalid_file_name_face,
+		Invalid_file_name_slice,
+		Invalid_file_name_mip,
+		Invalid_operation,
+
+		Missing_face = 0x21,
+		Missing_paths,
+		Missing_resource_index,
+
+		Conflicting_image_size = 0x41,
+		Conflicting_image_format,
+		Conflicting_resource_index,
+
+		Too_many_mips = 0x61
+	);
+
+	Texture::Info Helper::loadMemoryExternal(const Buffer &data, const Graphics &g, Flags flags) {
+
+		IGXI out;
+		out.data.push_back({ data });
+
+		ErrorMessage errorMessage = convert(out, List<FileDesc>{ {} }, flags);
+
+		if (errorMessage != SUCCESS)
+			oic::System::log()->fatal(ErrorMessageExposed::nameByValue((ErrorMessageExposed::_E)errorMessage));
+
+		return convert(out, g);
+	}
+
+	Texture::Info Helper::loadDiskExternal(const String &path, const Graphics &g, Flags flags) {
+		return loadMemoryExternal(oic::System::files()->readToBuffer(path), g, flags);
 	}
 
 }
