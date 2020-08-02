@@ -57,19 +57,33 @@ namespace igxi {
 
 		switch (FormatHelper::getStrideBytes(target)) {
 
-			case 2:	
+			case 2:	{
+
+				f16 v;
 
 				if(FormatHelper::getStrideBytes(input) == 4)
-					return toU64(f16(*(const f32*)&val));
+					v = f16(*(const f32*)&val);
+				else
+					v = f16(*(const f64*)&val);
 
-				return toU64(f16(*(const f64*)&val));
+				if (v.lacksPrecision())
+					v = f16::max();
 
-			case 4:
+				return toU64(v);
+			}
+
+			case 4: {
 
 				if(FormatHelper::getStrideBytes(input) == 2)
 					return toU64(f32(*(const f16*)&val));
 
-				return toU64(f32(*(const f64*)&val));
+				f32 v = f32(*(const f64*)&val);
+
+				if ((*(flp32*)&v).lacksPrecision())
+					v = f32_MAX;
+
+				return toU64(v);
+			}
 
 			case 8:
 
