@@ -227,7 +227,7 @@ namespace igxi {
 		if (flags & Helper::IS_SRGB) {
 
 			if (bytes == 1 && channelCount == 4)
-				format = GPUFormat::sRGBA8;
+				format = GPUFormat::srgba8;
 
 		} else {
 
@@ -785,7 +785,7 @@ namespace igxi {
 
 		//Checking for custom formats
 
-		if (format > GPUFormat::sRGBA8)
+		if (format > GPUFormat::srgba8)
 			return false;
 
 		//Checking bit depth
