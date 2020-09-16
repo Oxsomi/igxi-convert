@@ -50,10 +50,16 @@ namespace igxi {
 	inline bool canConvert(GPUFormat target, GPUFormat input) {
 		return 
 			FormatHelper::getType(target) == FormatHelper::getType(input) && 
-			FormatHelper::getType(target) == GPUFormatType::FLOAT;
+			(
+				FormatHelper::getType(target) == GPUFormatType::FLOAT ||
+				FormatHelper::getStrideBytes(target) == FormatHelper::getStrideBytes(input)
+			);
 	}
 
 	inline u64 convert(GPUFormat target, GPUFormat input, const u64 &val) {
+
+		if (FormatHelper::getStrideBytes(target) == FormatHelper::getStrideBytes(input))
+			return val;
 
 		switch (FormatHelper::getStrideBytes(target)) {
 
